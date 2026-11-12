@@ -319,6 +319,10 @@ def cmd_cloud(args: argparse.Namespace) -> int:
         return 0
 
     result = scanner.scan(force=True)
+    if not result.ok and result.note == "captcha":
+        print("Amazon ha bloccato la prima passata: riprovo tra 60 secondi.")
+        time.sleep(60)
+        result = scanner.scan(force=True)
     print(humanize_scan(result))
     return 0 if result.ok else 2
 

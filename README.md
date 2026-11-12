@@ -95,11 +95,24 @@ Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F`.
 | `/folle 50` | soglia "SCONTO FOLLE" |
 | `/dose 0,025` | prezzo massimo per dose 200 mg |
 | `/pausa` · `/riprendi` | sospende/riattiva le notifiche |
+| `/top` | i 5 sconti migliori in archivio |
+| `/info ASIN` | dettaglio, storico e ultimo alert di un prodotto |
+| `/report` | riepilogo degli ultimi 7 giorni |
 | `/ultimi` | ultimi 5 alert |
 | `/scan` | forza una scansione subito |
 | `/aiuto` | elenco comandi |
 
 Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `config.toml`.
+
+## Ottimizzazioni attive
+
+- **Fonti adattive**: un filtro Offerte che per 3 giri non restituisce nulla viene sospeso per 6 ore (misurato: dal cloud quegli 8 URL rendevano 0 risultati, ora vengono saltati).
+- **Dettagli in parallelo** (2 worker) con limite globale di una richiesta ogni ~2,5 s: scansione da 25 prodotti passata da ~105 s a ~46 s.
+- **Priorità**: prima le offerte con badge, poi gli sconti già visibili in vetrina (listino barrato validato), poi i nuovi, poi i più vecchi.
+- **Deduplica per confezione** (marca + forma + compresse + mg), non solo per ASIN: le varianti dello stesso listing non generano doppioni.
+- **Digest**: con 4 o più alert in un giro arriva un unico messaggio riepilogativo.
+- **Silenziamento**: bottone "Ignora 30 giorni" su ogni alert.
+- **Misure**: ogni scansione registra durata e numero di richieste, visibili in `/stato`.
 
 ## Personalizzazione (`config.toml`)
 
@@ -111,6 +124,8 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 - `max_dettagli_per_scan`: quanti prodotti aprire per giro (con 130+ candidati la coda si smaltisce in più giri).
 - `browser_se_captcha`: fallback Chromium headless quando Amazon blocca.
 - `invia_immagine`: alert con foto del prodotto quando il testo sta nel limite didascalia.
+- `parallelismo`: pagine prodotto scaricate in parallelo (1 = seriale).
+- `digest_min`: numero di alert oltre il quale parte il riepilogo unico.
 - `intervallo_minuti`: ogni quanto controllare (30 è un buon compromesso).
 
 ## Cosa esiste già (ricerca fatta a novembre 2026)
@@ -165,7 +180,7 @@ caffeina_bot/
   telegram.py           client Bot API + formattazione messaggi
   store.py              SQLite: storico prezzi, alert, cache, soglie
   config.py             config.toml + .env
-tests/                  41 test offline (parser, regole, comandi, fonti)
+tests/                  54 test offline (parser, regole, comandi, fonti, ottimizzazioni)
 data/                   state.db, bot.log, cookies.json (ignorati da git)
 ```
 

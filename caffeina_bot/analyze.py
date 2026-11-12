@@ -17,6 +17,11 @@ PILLS_RE = re.compile(
     re.IGNORECASE,
 )
 
+FORM_RE = re.compile(
+    r"(?<![a-z])(compresse|capsule|caps|tavolette|tablet|pillole|pastiglie)(?![a-z])",
+    re.IGNORECASE,
+)
+
 # Prodotti che non sono pillole di caffeina (caffè, bevande, integratori generici)
 NOISE_RE = re.compile(
     r"cialde|capsule di caff[eè]|caff[eè] in grani|macinato|moka|espresso|"
@@ -60,6 +65,24 @@ def parse_title(title: str) -> TitleInfo:
         info.pills = max(pills)  # il numero più grande è la confezione
 
     return info
+
+
+def dedupe_key(title: str, pills: int | None, mg_per_pill: float | None) -> str:
+    """Chiave stabile del prodotto, indipendente dall'ASIN.
+
+    Usa le prime due parole (di solito marca + prodotto), la forma farmaceutica,
+    la confezione e il dosaggio: le varianti dello stesso listing finiscono sulla
+    stessa chiave, prodotti diversi no.
+    """
+    testo = DECAF_RE.sub(" ", title or "")
+    tokens = re.findall(r"[a-z0-9]+", testo.lower())
+    prefisso = " ".join(tokens[:2])
+    forma = ""
+    match = FORM_RE.search(testo)
+    if match:
+        forma = match.group(1).lower()[:4]
+    mg = int(round(mg_per_pill)) if mg_per_pill else 0
+    return f"{prefisso}|{forma}|{pills or 0}|{mg}"
 
 
 def dose_cost(price: float | None, mg_per_pill: float | None, pills: int | None, dose_mg: float = 200.0) -> float | None:

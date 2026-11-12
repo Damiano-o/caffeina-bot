@@ -118,8 +118,28 @@ class TelegramClient:
             params["reply_markup"] = {"inline_keyboard": keyboard}
         return self.api("sendPhoto", params)
 
+    def edit_message_reply_markup(
+        self, chat_id: str | int, message_id: int, keyboard: list[list[dict]] | None = None
+    ) -> dict:
+        params: dict[str, Any] = {"chat_id": str(chat_id), "message_id": message_id}
+        params["reply_markup"] = {"inline_keyboard": keyboard or []}
+        return self.api("editMessageReplyMarkup", params)
+
+    def answer_callback_query(self, callback_id: str, text: str = "", show_alert: bool = False) -> dict:
+        return self.api(
+            "answerCallbackQuery",
+            {
+                "callback_query_id": callback_id,
+                "text": text[:200],
+                "show_alert": show_alert,
+            },
+        )
+
     def get_updates(self, offset: int | None = None, timeout: int = 20) -> list[dict]:
-        params: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message"]}
+        params: dict[str, Any] = {
+            "timeout": timeout,
+            "allowed_updates": ["message", "callback_query"],
+        }
         if offset is not None:
             params["offset"] = offset
         result = self.api("getUpdates", params)
@@ -194,4 +214,27 @@ def format_alert(detail: Any, verdict: Any, info: Any, *, tag_affiliato: str = "
 
 def alert_keyboard(detail: Any, *, tag_affiliato: str = "") -> list[list[dict]]:
     link = detail.url + (f"?tag={tag_affiliato}" if tag_affiliato else "")
-    return [[{"text": "🛒 Apri su Amazon", "url": link}]]
+    return [
+        [{"text": "🛒 Apri su Amazon", "url": link}],
+        [{"text": "🔕 Ignora 30 giorni", "callback_data": f"mute:{detail.asin}"}],
+    ]
+
+
+def format_digest(items: list[tuple[Any, Any, Any]], *, tag_affiliato: str = "") -> str:
+    """Un solo messaggio quando gli alert sono tanti: meno rumore, stessa informazione."""
+    righe = [f"🔥 <b>{len(items)} sconti sopra soglia</b>", ""]
+    for indice, (detail, verdict, info) in enumerate(items[:12], 1):
+        icona = KIND_ICON.get(verdict.kind, "🔔")
+        sconto = verdict.discount_pct or 0
+        prezzo = verdict.effective_price or detail.price
+        link = detail.url + (f"?tag={tag_affiliato}" if tag_affiliato else "")
+        titolo = html.escape((detail.title or "")[:80])
+        righe.append(f"<b>{indice}.</b> {icona} <b>−{sconto:.0f}%</b> · <a href=\"{html.escape(link)}\">{titolo}</a>")
+        dettagli = [_eur(prezzo)]
+        if verdict.dose_eur:
+            dettagli.append(f"{verdict.dose_eur:.3f} €/dose".replace(".", ","))
+        if info and info.pills and info.mg_per_pill:
+            dettagli.append(f"{info.pills} × {info.mg_per_pill:.0f} mg")
+        righe.append("   " + " · ".join(dettagli))
+        righe.append("")
+    return "\n".join(righe)[:MAX_LEN]

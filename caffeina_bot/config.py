@@ -70,6 +70,8 @@ class Settings:
     usa_browser_se_captcha: bool = True
     timeout_browser_secondi: int = 45
     invia_immagine: bool = True
+    parallelismo: int = 2
+    digest_min: int = 4
 
     # --- Regole "sconto folle" (default: possono essere cambiate anche dal bot) ---
     sconto_minimo: float = 30.0
@@ -137,6 +139,8 @@ class Settings:
             usa_browser_se_captcha=bool(amazon.get("browser_se_captcha", True)),
             timeout_browser_secondi=max(15, int(num(amazon, "timeout_browser_secondi", 45))),
             invia_immagine=bool(amazon.get("invia_immagine", True)),
+            parallelismo=max(1, int(num(amazon, "parallelismo", 2))),
+            digest_min=max(2, int(num(amazon, "digest_min", 4))),
             sconto_minimo=num(regole, "sconto_minimo", 30.0),
             sconto_folle=num(regole, "sconto_folle", 45.0),
             dose_max_eur=num(regole, "dose_max_eur", 0.03),

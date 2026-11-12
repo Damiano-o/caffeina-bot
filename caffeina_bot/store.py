@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS products (
     last_seen TEXT,
     last_alert_at TEXT,
     last_alert_price REAL,
-    last_alert_kind TEXT
+    last_alert_kind TEXT,
+    dedupe_key TEXT,
+    muted_until TEXT
 );
 
 CREATE TABLE IF NOT EXISTS history (
@@ -53,7 +55,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     list_price REAL,
     discount REAL,
     dose_eur REAL,
-    kind TEXT
+    kind TEXT,
+    dedupe_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 
@@ -69,7 +72,9 @@ CREATE TABLE IF NOT EXISTS scan_log (
     ok INTEGER NOT NULL,
     found INTEGER NOT NULL DEFAULT 0,
     alerted INTEGER NOT NULL DEFAULT 0,
-    note TEXT
+    note TEXT,
+    durata_s REAL,
+    richieste INTEGER
 );
 """
 
@@ -100,7 +105,20 @@ class Store:
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
         """Piccole migrazioni per database creati con versioni precedenti."""
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(history)")}
+        def colonne(tabella: str) -> set[str]:
+            return {row["name"] for row in conn.execute(f"PRAGMA table_info({tabella})")}
+
+        for tabella, extra in (
+            ("products", {"dedupe_key": "TEXT", "muted_until": "TEXT"}),
+            ("alerts", {"dedupe_key": "TEXT"}),
+            ("scan_log", {"durata_s": "REAL", "richieste": "INTEGER"}),
+        ):
+            esistenti = colonne(tabella)
+            for nome, tipo in extra.items():
+                if nome not in esistenti:
+                    conn.execute(f"ALTER TABLE {tabella} ADD COLUMN {nome} {tipo}")
+
+        columns = colonne("history")
         if columns and "id" not in columns:
             conn.executescript(
                 "ALTER TABLE history RENAME TO history_old;"
@@ -169,6 +187,13 @@ class Store:
     # ------------------------------------------------------------------ #
     # prodotti e storico
     # ------------------------------------------------------------------ #
+    def all_products(self) -> dict[str, sqlite3.Row]:
+        """Mappa asin -> riga, per evitare una query per candidato."""
+        with self._conn() as conn:
+            return {
+                row["asin"]: row for row in conn.execute("SELECT * FROM products").fetchall()
+            }
+
     def get_product(self, asin: str) -> sqlite3.Row | None:
         with self._conn() as conn:
             return conn.execute("SELECT * FROM products WHERE asin = ?", (asin,)).fetchone()
@@ -177,6 +202,7 @@ class Store:
         fields = [
             "asin", "title", "url", "price", "list_price", "discount", "dose_eur",
             "mg_per_pill", "pills", "coupon_pct", "rating", "reviews", "available", "card_price",
+            "dedupe_key",
         ]
         values = [data.get(f) for f in fields]
         with self._conn() as conn:
@@ -226,13 +252,14 @@ class Store:
         discount: float | None,
         dose_eur: float | None,
         kind: str,
+        dedupe_key: str | None = None,
     ) -> None:
         ts = now_iso()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO alerts(asin, ts, price, list_price, discount, dose_eur, kind) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (asin, ts, price, list_price, discount, dose_eur, kind),
+                "INSERT INTO alerts(asin, ts, price, list_price, discount, dose_eur, kind, dedupe_key) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (asin, ts, price, list_price, discount, dose_eur, kind, dedupe_key),
             )
             conn.execute(
                 "UPDATE products SET last_alert_at = ?, last_alert_price = ?, last_alert_kind = ? WHERE asin = ?",
@@ -252,6 +279,66 @@ class Store:
             return list(
                 conn.execute("SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             )
+
+    # ------------------------------------------------------------------ #
+    # muting e deduplica
+    # ------------------------------------------------------------------ #
+    def set_mute(self, asin: str, until_iso: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE products SET muted_until = ? WHERE asin = ?", (until_iso, asin))
+
+    def is_muted(self, asin: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT muted_until FROM products WHERE asin = ?", (asin,)).fetchone()
+        if row is None or not row["muted_until"]:
+            return False
+        fino = parse_iso(row["muted_until"])
+        return fino is not None and fino > datetime.now(timezone.utc)
+
+    def last_alert_for_key(self, dedupe_key: str) -> tuple[str | None, float | None]:
+        """Ultimo alert per lo stesso prodotto (titolo+confezione), anche con ASIN diverso."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT ts, price FROM alerts WHERE dedupe_key = ? ORDER BY id DESC LIMIT 1",
+                (dedupe_key,),
+            ).fetchone()
+        if row is None:
+            return None, None
+        return row["ts"], row["price"]
+
+    # ------------------------------------------------------------------ #
+    # viste per i comandi
+    # ------------------------------------------------------------------ #
+    def top_products(self, limit: int = 5) -> list[sqlite3.Row]:
+        with self._conn() as conn:
+            return list(
+                conn.execute(
+                    "SELECT * FROM products WHERE available = 1 AND discount IS NOT NULL "
+                    "AND dose_eur IS NOT NULL ORDER BY discount DESC, dose_eur ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            )
+
+    def product_by_asin(self, asin: str) -> sqlite3.Row | None:
+        with self._conn() as conn:
+            return conn.execute("SELECT * FROM products WHERE asin = ?", (asin,)).fetchone()
+
+    def alerts_since(self, giorni: int) -> list[sqlite3.Row]:
+        inizio = (datetime.now(timezone.utc) - timedelta(days=giorni)).isoformat(timespec="seconds")
+        with self._conn() as conn:
+            return list(
+                conn.execute("SELECT * FROM alerts WHERE ts >= ? ORDER BY id DESC", (inizio,)).fetchall()
+            )
+
+    def price_range(self, asin: str) -> tuple[float | None, float | None, int]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MIN(price) AS minimo, MAX(price) AS massimo, COUNT(*) AS n FROM history WHERE asin = ?",
+                (asin,),
+            ).fetchone()
+        if row is None or not row["n"]:
+            return None, None, 0
+        return row["minimo"], row["massimo"], int(row["n"])
 
     # ------------------------------------------------------------------ #
     # cache dettagli
@@ -284,11 +371,21 @@ class Store:
     # ------------------------------------------------------------------ #
     # log scansioni
     # ------------------------------------------------------------------ #
-    def log_scan(self, *, ok: bool, found: int = 0, alerted: int = 0, note: str = "") -> None:
+    def log_scan(
+        self,
+        *,
+        ok: bool,
+        found: int = 0,
+        alerted: int = 0,
+        note: str = "",
+        durata_s: float | None = None,
+        richieste: int | None = None,
+    ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO scan_log(ts, ok, found, alerted, note) VALUES(?, ?, ?, ?, ?)",
-                (now_iso(), 1 if ok else 0, found, alerted, note[:500]),
+                "INSERT INTO scan_log(ts, ok, found, alerted, note, durata_s, richieste) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (now_iso(), 1 if ok else 0, found, alerted, note[:500], durata_s, richieste),
             )
 
     def last_scan(self) -> sqlite3.Row | None:
@@ -304,9 +401,15 @@ class Store:
                 ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"),),
             ).fetchone()["n"]
             last = conn.execute("SELECT * FROM scan_log ORDER BY id DESC LIMIT 1").fetchone()
+            media = conn.execute(
+                "SELECT AVG(durata_s) AS d, AVG(richieste) AS r FROM scan_log "
+                "WHERE durata_s IS NOT NULL ORDER BY id DESC LIMIT 20"
+            ).fetchone()
         return {
             "prodotti": products,
             "alert_totali": alerts,
             "alert_7gg": week,
             "ultima_scansione": dict(last) if last else None,
+            "durata_media_s": media["d"] if media else None,
+            "richieste_medie": media["r"] if media else None,
         }

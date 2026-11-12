@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,6 +199,8 @@ class SearchHit:
     title: str
     url: str
     card_price: float | None = None
+    card_list_price: float | None = None
+    card_discount: float | None = None
     sponsored: bool = False
     badge: str | None = None
 
@@ -252,6 +255,23 @@ def parse_search(html: str, domain: str = "www.amazon.it") -> list[SearchHit]:
                 "span.a-price span.a-offscreen",
             ],
         )
+        card_list_price = None
+        for nodo in card.select("span.a-text-price span.a-offscreen"):
+            contesto = (nodo.find_parent("span") or nodo).get_text(" ", strip=True).lower()
+            if "unit" in contesto:
+                continue
+            valore = parse_price(_txt(nodo))
+            if valore and (card_list_price is None or valore > card_list_price):
+                card_list_price = valore
+        # il listino in vetrina è affidabile solo con rapporti plausibili:
+        # scarta prezzi per unità (0,03 €) e totali di confezioni multiple (900 €)
+        card_discount = None
+        if card_price and card_list_price:
+            plausibile = card_list_price >= 3 and card_price * 1.05 <= card_list_price <= card_price * 3.5
+            if plausibile:
+                card_discount = round((card_list_price - card_price) / card_list_price * 100, 1)
+            else:
+                card_list_price = None
 
         seen.add(asin)
         hits.append(
@@ -260,6 +280,8 @@ def parse_search(html: str, domain: str = "www.amazon.it") -> list[SearchHit]:
                 title=title,
                 url=f"https://{domain}/dp/{asin}",
                 card_price=card_price,
+                card_list_price=card_list_price,
+                card_discount=card_discount,
                 sponsored=sponsored,
                 badge=badge,
             )
@@ -386,6 +408,8 @@ class AmazonClient:
         self.session.headers["User-Agent"] = random.choice(UA_POOL)
         self._load_cookies()
         self._last_request_at = 0.0
+        self._throttle_lock = threading.Lock()
+        self.richieste = 0
 
     # -- cookie persistence -------------------------------------------------- #
     def _load_cookies(self) -> None:
@@ -410,10 +434,14 @@ class AmazonClient:
 
     # -- HTTP ---------------------------------------------------------------- #
     def _throttle(self) -> None:
-        elapsed = time.monotonic() - self._last_request_at
-        wait = random.uniform(self.delay_min, self.delay_max) - elapsed
-        if wait > 0:
-            time.sleep(wait)
+        """Distanzia le richieste anche con più thread (limite globale)."""
+        with self._throttle_lock:
+            elapsed = time.monotonic() - self._last_request_at
+            wait = random.uniform(self.delay_min, self.delay_max) - elapsed
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request_at = time.monotonic()
+            self.richieste += 1
 
     def _get(self, url: str, referer: str | None = None, attempts: int = 3) -> str:
         try:

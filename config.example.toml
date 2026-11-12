@@ -20,6 +20,8 @@ filtri_offerte = ["offerte_e_risparmi", "offerte_del_giorno"]  # sezioni Offerte
 browser_se_captcha = true  # fallback con Chromium headless se Amazon blocca
 timeout_browser_secondi = 45
 invia_immagine = true      # alert con foto prodotto quando il testo è breve
+parallelismo = 2           # pagine prodotto scaricate in parallelo (1 = seriale)
+digest_min = 4             # con N alert in un giro manda un unico messaggio riepilogativo
 tag_affiliato = ""         # opzionale, es. "mionome-21"
 ritardo_min_secondi = 1.8  # pausa tra richieste (non scendere sotto 1.5)
 ritardo_max_secondi = 3.6
