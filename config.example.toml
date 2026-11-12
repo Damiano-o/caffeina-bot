@@ -1,0 +1,43 @@
+# Copia questo file in `config.toml` e personalizza.
+# I segreti (token, chat id) vanno in `.env`, creato da `python run.py setup`.
+
+[telegram]
+# Lasciare vuoti: vengono presi da .env
+token = ""
+chat_id = ""
+
+[amazon]
+dominio = "www.amazon.it"
+# Ricerche controllate a ogni giro
+queries = [
+  "caffeina compresse",
+  "caffeina capsule",
+  "caffeina 200 mg",
+  "caffeine pills",
+]
+pagine = 1                 # pagine di risultati per ricerca
+filtri_offerte = ["offerte_e_risparmi", "offerte_del_giorno"]  # sezioni Offerte ("[]" per disattivarle)
+browser_se_captcha = true  # fallback con Chromium headless se Amazon blocca
+timeout_browser_secondi = 45
+invia_immagine = true      # alert con foto prodotto quando il testo è breve
+tag_affiliato = ""         # opzionale, es. "mionome-21"
+ritardo_min_secondi = 1.8  # pausa tra richieste (non scendere sotto 1.5)
+ritardo_max_secondi = 3.6
+cache_dettagli_ore = 6     # riuso la pagina prodotto se recente
+max_dettagli_per_scan = 25 # limite pagine prodotto aperte per giro
+
+[regole]
+# --- notifica solo sconti ALTI ---
+sconto_minimo = 30         # % minimo di sconto sul prezzo consigliato
+sconto_folle = 45          # % per l'etichetta SCONTO FOLLE
+dose_max_eur = 0.03        # prezzo massimo per dose da 200 mg (filtro anti-fregatura)
+calo_storico_minimo = 12   # % sotto il minimo storico registrato dal bot
+solo_disponibili = true
+max_alert_giorno = 8       # tetto anti-spam
+ripeti_dopo_ore = 48       # stesso prodotto: max un alert ogni N ore
+
+[scansione]
+intervallo_minuti = 30
+jitter_minuti = 5          # variazione casuale per non sembrare un bot
+db_path = "data/state.db"
+log_path = "data/bot.log"
