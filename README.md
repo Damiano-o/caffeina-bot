@@ -84,14 +84,16 @@ Per farlo girare senza finestra e **riavviarlo da solo** se muore o si blocca:
 doppio clic su installa_avvio_automatico.bat
 ```
 
-Crea due attività pianificate (`CaffeinaBot`, `CaffeinaBotLogon`) che lanciano `avvia_watchdog.vbs` all'accesso e **ogni 5 minuti**. Il watchdog (`watchdog.py`) controlla due segnali: la porta del lock di istanza singola e la freschezza di `data/heartbeat.json`; se il processo è morto lo avvia, se è bloccato (heartbeat vecchio) lo termina e lo riavvia. Log in `data/watchdog.log`.
+Crea un'attività pianificata (`CaffeinaBot`) che lancia `avvia_watchdog.vbs` **ogni 5 minuti** (quindi parte anche all'accesso, entro 5 minuti). Il watchdog (`watchdog.py`) legge `data/heartbeat.json`: se il pid non esiste avvia il bot, se esiste ma l'heartbeat è fermo da più di ~22 minuti lo termina e lo riavvia. Log in `data/watchdog.log`.
 
 ```powershell
 python watchdog.py --status      # diagnosi: porta, heartbeat, pid
 schtasks /Run /TN "CaffeinaBot"  # avvio immediato
 ```
 
-Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F` e `schtasks /Delete /TN "CaffeinaBotLogon" /F`.
+Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F`.
+
+L'attività è impostata per partire anche a batterie e per non essere interrotta quando il PC passa a batteria (i default di Windows le bloccavano, ed è un laptop).
 
 ### Perché serve il watchdog
 
@@ -135,7 +137,7 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 - **Deduplica per confezione** (marca + forma + compresse + mg), non solo per ASIN: le varianti dello stesso listing non generano doppioni.
 - **Digest**: con 4 o più alert in un giro arriva un unico messaggio riepilogativo.
 - **Silenziamento**: bottone "Ignora 30 giorni" su ogni alert.
-- **Misure**: ogni scansione registra durata, richieste e prodotti saltati, visibili in `/stato`.
+- **Misure**: ogni scansione registra durata, richieste e prodotti saltati, visibili nel log e nel riepilogo di `/scan`.
 - **Soglia dose tarabile**: `/dose auto` la calcola dal mercato rilevato (25° percentile × 0,8); i valori scelti a mano non vengono sovrascritti dagli aggiornamenti.
 
 ## Personalizzazione (`config.toml`)
@@ -234,5 +236,5 @@ data/                   state.db, bot.log, watchdog.log, heartbeat.json, cookies
 | `HTTP 503` ripetuto | Amazon sta limitando: attendi 30–60 minuti |
 | Prezzi a 0 o strani | apri `data/bot.log`, controlla l'ASIN e rilancia `python run.py scan --dry` |
 | Vuoi ripartire da zero | chiudi il bot, cancella `data/state.db` |
-| Il bot non risponde su Telegram | `python watchdog.py --status`: se la porta è libera è morto, il watchdog lo riavvia entro 5 minuti (o `schtasks /Run /TN "CaffeinaBot"`) |
+| Il bot non risponde su Telegram | `python watchdog.py --status`: se il pid non è vivo, il watchdog lo riavvia entro 5 minuti (o `schtasks /Run /TN "CaffeinaBot"`) |
 | Comandi ignorati come "scaduti" | erano in coda da più di 15 minuti: rilanciali |

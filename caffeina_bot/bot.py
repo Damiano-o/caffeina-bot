@@ -79,6 +79,7 @@ class BotRunner:
 
         log.info("Bot avviato. Prossima scansione tra pochi secondi.")
         prossima = datetime.now(timezone.utc) + timedelta(seconds=15)
+        self._heartbeat(prossima)  # segnale di vita subito, prima del polling
         if annuncia:
             try:
                 self.telegram.send_message(

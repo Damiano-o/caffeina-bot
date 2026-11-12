@@ -10,11 +10,12 @@ Perché serve: il bot è un processo unico. Se Windows va in sospensione, la
 sessione si chiude o Python termina per memoria, il polling Telegram muore e
 nessuno se ne accorge. Il watchdog usa due segnali indipendenti:
 
-1. la porta del lock di istanza singola (45999) risponde -> il processo c'è;
-2. data/heartbeat.json è recente -> il processo sta lavorando, non è bloccato.
+1. il pid scritto in data/heartbeat.json è ancora vivo;
+2. quel pid aggiorna l'heartbeat con regolarità (non è bloccato).
 
-Se la porta è libera avvia il bot; se la porta risponde ma l'heartbeat è
-vecchio, termina il processo e lo riavvia.
+Se il pid non esiste avvia il bot; se esiste ma l'heartbeat è vecchio lo
+termina e lo riavvia. Sul loop di polling un ciclo dura al massimo ~20 s,
+quindi un heartbeat fermo da oltre 20 minuti significa processo appeso.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import json
 import logging
 import logging.handlers
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -35,7 +35,6 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from caffeina_bot.config import DATA_DIR, Settings  # noqa: E402
-from caffeina_bot.single_instance import PORTA  # noqa: E402
 from caffeina_bot.store import parse_iso  # noqa: E402
 
 log = logging.getLogger("watchdog")
@@ -63,10 +62,24 @@ def setup_logging(verbose: bool = False) -> None:
         root.addHandler(console)
 
 
-def processo_in_ascolto(porta: int = PORTA) -> bool:
+def pid_vivo(pid: int) -> bool:
+    """True se il processo esiste ancora (senza dipendere dalle API di psutil)."""
+    if not pid:
+        return False
+    if os.name == "nt":
+        try:
+            esito = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in (esito.stdout or "")
     try:
-        with socket.create_connection(("127.0.0.1", porta), timeout=1.5):
-            return True
+        os.kill(pid, 0)
+        return True
     except OSError:
         return False
 
@@ -134,25 +147,48 @@ def termina(pid: int) -> None:
         log.error("Impossibile terminare il pid %s: %s", pid, exc)
 
 
+def comando_processo(pid: int) -> str:
+    """Command line del processo, per non terminare un pid riciclato dal sistema."""
+    if os.name != "nt":
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
+        except OSError:
+            return ""
+    script = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"
+    try:
+        esito = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (esito.stdout or "").strip()
+
+
 def controlla(cfg: Settings, *, avvia: bool = True) -> int:
     dati = heartbeat()
     eta = eta_heartbeat_minuti(dati)
-    vivo = processo_in_ascolto()
+    pid = int((dati or {}).get("pid") or 0)
+    vivo = pid_vivo(pid)
     limite = tolleranza_minuti(cfg)
 
-    descrizione = f"porta {'occupata' if vivo else 'libera'}"
+    descrizione = f"pid {pid or '-'} {'vivo' if vivo else 'assente'}"
     descrizione += f", heartbeat {'assente' if eta is None else f'{eta:.1f} min'}"
 
     if not vivo:
-        log.warning("Bot morto (%s): lo riavvio", descrizione)
+        log.warning("Bot non attivo (%s): lo avvio", descrizione)
         return 0 if (avvia and avvia_bot(cfg)) else 1
 
-    if eta is not None and eta > limite:
-        pid = int(dati.get("pid") or 0) if dati else 0
-        log.warning("Bot bloccato (%s > %.0f min): riavvio", descrizione, limite)
-        if pid:
-            termina(pid)
-            time.sleep(2)
+    if eta is None or eta > limite:
+        comando = comando_processo(pid)
+        if comando and "run.py" not in comando:
+            log.error("Il pid %s non è il bot (%s): non lo termino", pid, comando[:120])
+            return 0 if (avvia and avvia_bot(cfg)) else 1
+        log.warning("Bot bloccato (%s > %.0f min): lo riavvio", descrizione, limite)
+        termina(pid)
+        time.sleep(2)
         return 0 if (avvia and avvia_bot(cfg)) else 1
 
     log.debug("Bot attivo (%s)", descrizione)
@@ -172,11 +208,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.status:
         dati = heartbeat()
         eta = eta_heartbeat_minuti(dati)
-        print(f"porta {PORTA}: {'occupata' if processo_in_ascolto() else 'libera'}")
+        pid = int((dati or {}).get("pid") or 0)
+        print(f"pid {pid or '-'}: {'vivo' if pid_vivo(pid) else 'assente'}")
         print(f"heartbeat: {'assente' if eta is None else f'{eta:.1f} minuti fa'}")
         print(f"tolleranza: {tolleranza_minuti(cfg):.0f} minuti")
         if dati:
-            print(f"pid {dati.get('pid')} · stato {dati.get('stato')} · prossima {dati.get('prossima')}")
+            print(f"stato {dati.get('stato')} · prossima {dati.get('prossima')}")
         return 0
 
     if args.force:

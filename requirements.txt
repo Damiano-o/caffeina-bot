@@ -1,4 +1,5 @@
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+lxml>=5.0   # parser veloce; se manca il bot usa html.parser
 # opzionale: fallback con browser headless quando Amazon blocca
 # playwright>=1.40.0
