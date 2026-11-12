@@ -11,6 +11,8 @@ name: Sconti caffeina
 on:
   schedule:
     - cron: "*/15 * * * *"
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       force:
