@@ -308,9 +308,7 @@ def cmd_cloud(args: argparse.Namespace) -> int:
     store.set_setting("update_offset", offset)
 
     if not chat_id:
-        print("Nessuna chat configurata: scansione eseguita ma alert non inviabili.")
-        store.log_scan(ok=True, note="chat id assente")
-        return 0
+        print("Nessuna chat configurata: scansiono comunque, gli alert saranno saltati.")
 
     ultima = store.last_scan()
     ultima_dt = parse_iso(ultima["ts"]) if ultima is not None else None
