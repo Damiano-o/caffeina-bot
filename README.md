@@ -78,13 +78,24 @@ Il bot resta attivo: risponde ai comandi e scansiona ogni 30 minuti (±5 di jitt
 
 Doppio clic su `avvia_bot.bat` per la versione con finestra (utile per vedere i log), oppure `avvia_bot_silenzioso.vbs` per farlo girare senza finestra.
 
-Per farlo partire a ogni accesso:
+Per farlo girare senza finestra e **riavviarlo da solo** se muore o si blocca:
 
 ```powershell
-schtasks /Create /TN "CaffeinaBot" /SC ONLOGON /RL LIMITED /F /TR "wscript.exe \"C:\Users\miche\amazon-caffeina-alerts\avvia_bot_silenzioso.vbs\""
+doppio clic su installa_avvio_automatico.bat
 ```
 
-Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F`.
+Crea due attività pianificate (`CaffeinaBot`, `CaffeinaBotLogon`) che lanciano `avvia_watchdog.vbs` all'accesso e **ogni 5 minuti**. Il watchdog (`watchdog.py`) controlla due segnali: la porta del lock di istanza singola e la freschezza di `data/heartbeat.json`; se il processo è morto lo avvia, se è bloccato (heartbeat vecchio) lo termina e lo riavvia. Log in `data/watchdog.log`.
+
+```powershell
+python watchdog.py --status      # diagnosi: porta, heartbeat, pid
+schtasks /Run /TN "CaffeinaBot"  # avvio immediato
+```
+
+Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F` e `schtasks /Delete /TN "CaffeinaBotLogon" /F`.
+
+### Perché serve il watchdog
+
+Il 12/11/2026 il bot si è fermato alle 14:48 senza errori nel log (processo terminato mentre il PC era in uso) e per tre ore i comandi sono rimasti in coda su Telegram: `getUpdates` non aveva più nessuno che lo chiamasse. Un processo unico e silenzioso non basta: serve un supervisore esterno che parta a intervalli regolari e verifichi un segnale di vita indipendente dal processo (`data/heartbeat.json`, aggiornato a ogni ciclo di polling).
 
 ## Comandi del bot
 
@@ -107,13 +118,24 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 
 ## Ottimizzazioni attive
 
+- **Fast-skip dei prezzi invariati**: se il prezzo di vetrina è identico a quello già valutato e non c'è un badge sconto, la pagina prodotto non viene aperta (nessun nuovo alert possibile). Misurato sui test: 2/2 pagine evitate al secondo giro. Si disattiva con `salta_prezzi_invariati = false`; `/scan` la bypassa sempre.
+- **Cache con TTL adattivo**: prodotti con prezzo stabile (variazione < 2% in 21 giorni) vengono riusati per 24 ore invece di 6 (`cache_stabile_ore`).
+- **Limite di tempo per giro** (`max_secondi_scansione`, default 480): evita di sforare il timeout dei runner cloud; il resto della coda passa al giro dopo.
+- **Parser lxml**: 3-5 volte più veloce di `html.parser` sul parsing delle pagine, con fallback automatico se la libreria manca.
+- **Cookie su disco solo ogni 2 minuti**: prima venivano riscritti a ogni richiesta HTTP.
+- **Rinnovo sessione**: dopo 3 blocchi consecutivi il client azzera i cookie e cambia user agent.
+- **Offset dei comandi persistito**: al riavvio non vengono rieseguiti comandi già letti; i comandi rimasti in coda più di 15 minuti vengono ignorati con un avviso (evita 5 `/scan` in fila dopo un fermo).
+- **Scansione manuale in background**: `/scan` risponde subito e non blocca il polling; un lock impedisce due scansioni contemporanee.
+- **Loop indistruttibile**: qualunque eccezione nel polling viene loggata e il loop continua con backoff (prima un errore non previsto poteva terminare il processo).
+- **Storico compatto**: niente campioni duplicati se il prezzo non cambia entro 6 ore; indici su `alerts(dedupe_key)` e `products(last_seen)`, `synchronous=NORMAL` e `busy_timeout` su SQLite.
+- **Tetto giornaliero corretto**: il conteggio riparte dalla mezzanotte locale, non da quella UTC.
 - **Fonti adattive**: un filtro Offerte che per 3 giri non restituisce nulla viene sospeso per 6 ore (misurato: dal cloud quegli 8 URL rendevano 0 risultati, ora vengono saltati).
 - **Dettagli in parallelo** (2 worker) con limite globale di una richiesta ogni ~2,5 s: scansione da 25 prodotti passata da ~105 s a ~46 s.
 - **Priorità**: prima le offerte con badge, poi gli sconti già visibili in vetrina (listino barrato validato), poi i nuovi, poi i più vecchi.
 - **Deduplica per confezione** (marca + forma + compresse + mg), non solo per ASIN: le varianti dello stesso listing non generano doppioni.
 - **Digest**: con 4 o più alert in un giro arriva un unico messaggio riepilogativo.
 - **Silenziamento**: bottone "Ignora 30 giorni" su ogni alert.
-- **Misure**: ogni scansione registra durata e numero di richieste, visibili in `/stato`.
+- **Misure**: ogni scansione registra durata, richieste e prodotti saltati, visibili in `/stato`.
 - **Soglia dose tarabile**: `/dose auto` la calcola dal mercato rilevato (25° percentile × 0,8); i valori scelti a mano non vengono sovrascritti dagli aggiornamenti.
 
 ## Personalizzazione (`config.toml`)
@@ -129,6 +151,10 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 - `parallelismo`: pagine prodotto scaricate in parallelo (1 = seriale).
 - `digest_min`: numero di alert oltre il quale parte il riepilogo unico.
 - `intervallo_minuti`: ogni quanto controllare (30 è un buon compromesso).
+- `cache_stabile_ore`: per quanto riusare il dettaglio di un prodotto con prezzo stabile.
+- `max_secondi_scansione`: tetto di tempo per giro (0 = nessun limite).
+- `salta_prezzi_invariati`: evita di aprire pagine prodotto quando il prezzo di vetrina non è cambiato.
+- `comando_vecchio_minuti`: dopo quanti minuti un comando rimasto in coda viene ignorato.
 
 ## Cosa esiste già (ricerca fatta a novembre 2026)
 
@@ -162,28 +188,31 @@ gh run view <id> --log              # log completi
 
 Limiti da conoscere:
 
+- **il cron di GitHub non è partito in 5 ore di prova**: nel repo `Damiano-o/caffeina-bot` risultano solo run `workflow_dispatch`, nessuna `schedule`, pur essendo il workflow sul branch di default (`master`) e attivo. GitHub legge i cron solo dal branch di default e li ritarda sotto carico; per un uso serio serve un trigger esterno (es. cron-job.org che chiama `POST /repos/OWNER/REPO/actions/workflows/sconti.yml/dispatches` con un PAT) oppure il bot locale con watchdog.
 - granularità 15 minuti (GitHub può ritardare i cron sotto carico);
 - dagli IP dei runner Amazon restituisce meno risultati rispetto a casa (nessun captcha nei test);
 - GitHub disattiva i workflow schedulati dopo 60 giorni senza attività sul repo: basta un commit o un avvio manuale;
-- repo pubblico: il token sta nei Secrets, mai nel codice.
+- repo pubblico: il token sta nei Secrets, mai nel codice;
+- se un giro fallisce, il workflow manda un avviso su Telegram con il link al run.
 
 Per copertura piena e comandi immediati serve un host 24/7: `Dockerfile` e `docker-compose.yml` sono pronti per una VM (Oracle Cloud Always Free, 2 OCPU/12 GB ARM, è l'opzione gratuita più solida).
 
 ## Struttura
 
 ```
-run.py                  CLI: setup / scan / run / test / stats
+run.py                  CLI: setup / scan / run / cloud / test / stats / health
+watchdog.py             supervisore: avvia o riavvia il bot se morto/bloccato
 caffeina_bot/
   amazon.py             ricerca (+ filtri Offerte) e pagina prodotto, parsing, anti-blocco
   browser.py            fallback Chromium headless via Playwright
   analyze.py            mg/compresse dal titolo, costo per dose, regole sconto
-  scanner.py            orchestrazione scan → alert
-  bot.py                comandi Telegram + loop periodico
+  scanner.py            orchestrazione scan → alert (fast-skip, cache adattiva)
+  bot.py                comandi Telegram + loop periodico + heartbeat
   telegram.py           client Bot API + formattazione messaggi
   store.py              SQLite: storico prezzi, alert, cache, soglie
   config.py             config.toml + .env
-tests/                  54 test offline (parser, regole, comandi, fonti, ottimizzazioni)
-data/                   state.db, bot.log, cookies.json (ignorati da git)
+tests/                  66 test offline (parser, regole, comandi, fonti, affidabilità)
+data/                   state.db, bot.log, watchdog.log, heartbeat.json, cookies.json
 ```
 
 ## Limiti e note
@@ -205,3 +234,5 @@ data/                   state.db, bot.log, cookies.json (ignorati da git)
 | `HTTP 503` ripetuto | Amazon sta limitando: attendi 30–60 minuti |
 | Prezzi a 0 o strani | apri `data/bot.log`, controlla l'ASIN e rilancia `python run.py scan --dry` |
 | Vuoi ripartire da zero | chiudi il bot, cancella `data/state.db` |
+| Il bot non risponde su Telegram | `python watchdog.py --status`: se la porta è libera è morto, il watchdog lo riavvia entro 5 minuti (o `schtasks /Run /TN "CaffeinaBot"`) |
+| Comandi ignorati come "scaduti" | erano in coda da più di 15 minuti: rilanciali |

@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     dedupe_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_key ON alerts(dedupe_key, ts);
+CREATE INDEX IF NOT EXISTS idx_products_seen ON products(last_seen);
 
 CREATE TABLE IF NOT EXISTS detail_cache (
     asin TEXT PRIMARY KEY,
@@ -100,6 +102,7 @@ class Store:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._migrate(conn)
 
     @staticmethod
@@ -137,6 +140,7 @@ class Store:
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=8000")
         try:
             yield conn
             conn.commit()
@@ -215,18 +219,54 @@ class Store:
                 (*values, now_iso(), now_iso()),
             )
 
-    def add_history(self, asin: str, price: float) -> None:
+    def add_history(self, asin: str, price: float, *, ore_minime: float = 6.0) -> bool:
+        """Registra un campione, evitando righe inutili quando il prezzo è identico.
+
+        Ritorna True se il campione è stato inserito. Senza questo filtro lo
+        storico cresceva di ~50 righe/giorno per prodotto con valori ripetuti,
+        rendendo MIN/MAX sempre più lenti senza aggiungere informazione.
+        """
         with self._conn() as conn:
+            ultimo = conn.execute(
+                "SELECT ts, price FROM history WHERE asin = ? ORDER BY id DESC LIMIT 1", (asin,)
+            ).fetchone()
+            if ultimo is not None:
+                quando = parse_iso(ultimo["ts"])
+                invariato = abs(float(ultimo["price"]) - float(price)) < 0.001
+                recente = quando is not None and (
+                    datetime.now(timezone.utc) - quando < timedelta(hours=ore_minime)
+                )
+                if invariato and recente:
+                    return False
             conn.execute(
                 "INSERT INTO history(asin, ts, price) VALUES(?, ?, ?)",
                 (asin, now_iso(), float(price)),
             )
             # tengo solo gli ultimi 400 campioni per prodotto
-            conn.execute(
-                "DELETE FROM history WHERE asin = ? AND id NOT IN ("
-                "  SELECT id FROM history WHERE asin = ? ORDER BY ts DESC LIMIT 400)",
-                (asin, asin),
-            )
+            campioni = conn.execute(
+                "SELECT COUNT(*) AS n FROM history WHERE asin = ?", (asin,)
+            ).fetchone()["n"]
+            if int(campioni) > 400:
+                conn.execute(
+                    "DELETE FROM history WHERE asin = ? AND id NOT IN ("
+                    "  SELECT id FROM history WHERE asin = ? ORDER BY ts DESC LIMIT 400)",
+                    (asin, asin),
+                )
+        return True
+
+    def stability_map(self, giorni: int = 21) -> dict[str, bool]:
+        """asin -> True se il prezzo è rimasto stabile (variazione < 2%)."""
+        inizio = (datetime.now(timezone.utc) - timedelta(days=giorni)).isoformat(timespec="seconds")
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT asin, MIN(price) AS minimo, MAX(price) AS massimo, COUNT(*) AS n "
+                "FROM history WHERE ts >= ? GROUP BY asin",
+                (inizio,),
+            ).fetchall()
+        return {
+            row["asin"]: (int(row["n"]) >= 3 and float(row["massimo"]) <= float(row["minimo"]) * 1.02)
+            for row in rows
+        }
 
     def history_min(self, asin: str) -> float | None:
         return self.history_stats(asin)[0]
@@ -267,7 +307,9 @@ class Store:
             )
 
     def alerts_today(self) -> int:
-        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # mezzanotte locale, altrimenti il tetto giornaliero slitta di 1-2 ore
+        inizio_locale = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = inizio_locale.astimezone(timezone.utc)
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM alerts WHERE ts >= ?", (start.isoformat(timespec="seconds"),)

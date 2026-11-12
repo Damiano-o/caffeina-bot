@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
+import os
 import random
 import signal
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 from .amazon import AmazonClient
 from .config import Settings
 from .scanner import Scanner, humanize_scan
-from .store import Store, parse_iso
+from .store import Store, now_iso, parse_iso
 from .telegram import TelegramClient, TelegramError
 
 log = logging.getLogger(__name__)
+
+# comandi "pesanti": se arrivano in ritardo (PC spento, rete giù) vanno ignorati
+COMANDI_PESANTI = {"/scan", "/pausa", "/riprendi", "/soglia", "/folle", "/dose"}
 
 HELP = (
     "<b>Bot sconti caffeina</b>\n\n"
@@ -58,8 +64,10 @@ class BotRunner:
         self.client = client
         self.telegram = telegram
         self.scanner = scanner
-        self.offset: int | None = None
+        self.offset: int | None = int(store.get_setting("update_offset", 0) or 0) or None
         self._stop = False
+        self._scan_lock = threading.Lock()
+        self._heartbeat_path = cfg.db_path.parent / "heartbeat.json"
 
     # ------------------------------------------------------------------ #
     def run(self, annuncia: bool = True) -> None:
@@ -82,17 +90,33 @@ class BotRunner:
             except TelegramError as exc:
                 log.warning("Impossibile inviare il messaggio di avvio: %s", exc)
 
+        errori = 0
         while not self._stop:
             try:
                 updates = self.telegram.get_updates(self.offset, timeout=20)
+                errori = 0
             except TelegramError as exc:
-                log.warning("getUpdates fallito: %s", exc)
+                errori += 1
+                attesa = min(60, 5 * errori)
+                log.warning("getUpdates fallito (%s), riprovo tra %ss", exc, attesa)
+                self._heartbeat(prossima, stato=f"errore telegram x{errori}")
+                time.sleep(attesa)
+                continue
+            except Exception:  # noqa: BLE001 - il polling non deve mai morire
+                log.exception("Errore imprevisto nel polling: continuo")
                 time.sleep(5)
-                updates = []
+                continue
 
             for update in updates:
                 self.offset = int(update.get("update_id", 0)) + 1
-                self._handle_update(update)
+                try:
+                    self._handle_update(update)
+                except Exception:  # noqa: BLE001
+                    log.exception("Errore nel gestire un aggiornamento")
+            if updates and self.offset is not None:
+                # salvo l'offset solo dopo aver gestito il blocco: al riavvio
+                # non vengono rieseguiti comandi già letti
+                self.store.set_setting("update_offset", self.offset)
 
             if datetime.now(timezone.utc) >= prossima and not self._stop:
                 self._run_scan()
@@ -102,7 +126,27 @@ class BotRunner:
                 )
                 log.info("Prossima scansione alle %s", prossima.astimezone().strftime("%H:%M"))
 
+            self._heartbeat(prossima)
+
+        self._heartbeat(prossima, stato="fermo")
         log.info("Bot fermato.")
+
+    def _heartbeat(self, prossima: datetime | None = None, *, stato: str = "attivo") -> None:
+        """Segnale di vita letto dal watchdog per capire se il bot è bloccato."""
+        payload = {
+            "pid": os.getpid(),
+            "ts": now_iso(),
+            "stato": stato,
+            "prossima": prossima.isoformat(timespec="seconds") if prossima else None,
+            "offset": self.offset,
+        }
+        try:
+            self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            temporaneo = self._heartbeat_path.with_suffix(".tmp")
+            temporaneo.write_text(json.dumps(payload), encoding="utf-8")
+            temporaneo.replace(self._heartbeat_path)
+        except OSError:
+            log.debug("Heartbeat non scritto")
 
     def _handle_signal(self, signum, frame) -> None:  # noqa: ANN001, ARG002
         log.info("Segnale %s ricevuto, chiusura...", signum)
@@ -110,6 +154,9 @@ class BotRunner:
 
     # ------------------------------------------------------------------ #
     def _run_scan(self) -> None:
+        if not self._scan_lock.acquire(blocking=False):
+            log.info("Scansione già in corso, salto il giro")
+            return
         try:
             result = self.scanner.scan()
             if not result.ok and result.note == "captcha":
@@ -122,6 +169,8 @@ class BotRunner:
                 self.telegram.send_message("⚠️ Errore imprevisto durante la scansione. Controlla i log.", preview=False)
             except TelegramError:
                 pass
+        finally:
+            self._scan_lock.release()
 
     # ------------------------------------------------------------------ #
     def _handle_update(self, update: dict) -> None:
@@ -147,6 +196,19 @@ class BotRunner:
         command, _, argument = text.partition(" ")
         command = command.split("@")[0].lower()
         argument = argument.strip()
+
+        # comandi rimasti in coda mentre il bot era spento: non rieseguirli
+        inviato = message.get("date")
+        if inviato and self.cfg.max_comando_vecchio_s > 0 and command in COMANDI_PESANTI:
+            eta = time.time() - float(inviato)
+            if eta > self.cfg.max_comando_vecchio_s:
+                log.info("Comando %s scaduto (%.0f min): ignorato", command, eta / 60)
+                self._reply(
+                    chat_id,
+                    f"⌛ Comando <code>{command}</code> scaduto ({eta / 60:.0f} minuti fa): ignorato.\n"
+                    "Riprovalo ora se serve.",
+                )
+                return
 
         handlers = {
             "/start": lambda: self._reply(chat_id, HELP),
@@ -357,9 +419,25 @@ class BotRunner:
         return "\n".join(lines)
 
     def _force_scan(self, chat_id: int | str) -> None:
-        self._reply(chat_id, "🔄 Scansione avviata, ti aggiorno appena finisco.")
-        result = self.scanner.scan(force=True)
-        self._reply(chat_id, humanize_scan(result))
+        if self.scanner is None:
+            self._reply(chat_id, "Scanner non disponibile.")
+            return
+        if self._scan_lock.locked():
+            self._reply(chat_id, "⏳ C'è già una scansione in corso, ti aggiorno appena finisce.")
+            return
+        self._reply(chat_id, "🔄 Scansione avviata in background, ti aggiorno appena finisco.")
+
+        def lavoro() -> None:
+            with self._scan_lock:
+                try:
+                    result = self.scanner.scan(force=True, salta_invariati=False)  # type: ignore[union-attr]
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Scansione forzata fallita")
+                    self._reply(chat_id, f"⚠️ Scansione non riuscita: {html.escape(str(exc))}")
+                    return
+                self._reply(chat_id, humanize_scan(result))
+
+        threading.Thread(target=lavoro, name="scan-forzata", daemon=True).start()
 
     # ------------------------------------------------------------------ #
     # viste dati

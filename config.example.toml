@@ -26,7 +26,10 @@ tag_affiliato = ""         # opzionale, es. "mionome-21"
 ritardo_min_secondi = 1.8  # pausa tra richieste (non scendere sotto 1.5)
 ritardo_max_secondi = 3.6
 cache_dettagli_ore = 6     # riuso la pagina prodotto se recente
+cache_stabile_ore = 24     # TTL più lungo per prodotti con prezzo stabile
 max_dettagli_per_scan = 25 # limite pagine prodotto aperte per giro
+max_secondi_scansione = 480 # tetto di tempo per giro (0 = nessun limite)
+salta_prezzi_invariati = true # non riapre la pagina se il prezzo di vetrina è identico
 
 [regole]
 # --- notifica solo sconti ALTI ---
@@ -41,5 +44,6 @@ ripeti_dopo_ore = 48       # stesso prodotto: max un alert ogni N ore
 [scansione]
 intervallo_minuti = 30
 jitter_minuti = 5          # variazione casuale per non sembrare un bot
+comando_vecchio_minuti = 15 # comandi rimasti in coda oltre questo tempo: ignorati
 db_path = "data/state.db"
 log_path = "data/bot.log"

@@ -2,6 +2,9 @@
 
 Ottimizzazioni principali:
 - fonti adattive: i filtri Offerte che non rendono vengono sospesi per 6 ore;
+- salto dei prodotti il cui prezzo di vetrina non è cambiato (meno richieste);
+- cache dettagli con TTL adattivo: prodotti stabili controllati più di rado;
+- limite di tempo per scansione (utile sui runner cloud);
 - dettagli in parallelo (2 worker) con limite globale di una richiesta ogni ~2,5 s;
 - priorità ai prodotti con sconto già visibile in vetrina;
 - deduplica per confezione (titolo+dosaggio), non solo per ASIN;
@@ -50,6 +53,7 @@ class ScanResult:
     valutati: int = 0
     alert: int = 0
     richieste: int = 0
+    saltati: int = 0
     durata_s: float = 0.0
     messaggi: list[str] = field(default_factory=list)
     note: str = ""
@@ -69,7 +73,7 @@ class Scanner:
         self.telegram = telegram
 
     # ------------------------------------------------------------------ #
-    def scan(self, *, dry: bool = False, force: bool = False) -> ScanResult:
+    def scan(self, *, dry: bool = False, force: bool = False, salta_invariati: bool = True) -> ScanResult:
         inizio = time.monotonic()
         thresholds = self.store.thresholds()
         if thresholds.get("pausa") and not force:
@@ -105,9 +109,21 @@ class Scanner:
             self._chiudi(result, inizio, note="nessun candidato")
             return result
 
-        to_fetch = self._seleziona(candidates)
+        soglia = float(thresholds["sconto_minimo"])
+        ordinati = self._seleziona(candidates)
+        if self.cfg.fast_skip and salta_invariati:
+            ordinati, result.saltati = self._filtra_invariati(ordinati, soglia)
+        to_fetch = self._applica_budget(ordinati)
+        if not to_fetch:
+            self._chiudi(result, inizio, note="tutti i prezzi invariati")
+            return result
+
+        self._stabili = self.store.stability_map()
+        deadline = None
+        if self.cfg.max_secondi_scansione > 0:
+            deadline = inizio + self.cfg.max_secondi_scansione
         try:
-            self._valuta_dettagli(to_fetch, thresholds, result)
+            self._valuta_dettagli(to_fetch, thresholds, result, deadline=deadline)
         except BlockedError as exc:
             log.warning("Bloccato durante i dettagli: %s", exc)
             self._notify_block()
@@ -209,6 +225,7 @@ class Scanner:
     def _seleziona(self, candidates: dict[str, Candidate]) -> list[Candidate]:
         soglia = float(self.store.thresholds()["sconto_minimo"])
         prodotti = self.store.all_products()
+        self._prodotti = prodotti
 
         def priority(item: Candidate) -> tuple:
             row = prodotti.get(item.hit.asin)
@@ -240,6 +257,9 @@ class Scanner:
             )
 
         ordered = sorted(candidates.values(), key=priority)
+        return ordered
+
+    def _applica_budget(self, ordered: list[Candidate]) -> list[Candidate]:
         budget = max(1, int(self.cfg.max_dettagli_per_scan))
         to_fetch = ordered[:budget]
         if len(ordered) > len(to_fetch):
@@ -250,6 +270,53 @@ class Scanner:
             )
         return to_fetch
 
+    def _filtra_invariati(
+        self, cands: list[Candidate], soglia: float
+    ) -> tuple[list[Candidate], int]:
+        """Salta la pagina prodotto quando il prezzo di vetrina è identico a quello noto.
+
+        Se il prezzo non è cambiato non può nascere un nuovo alert (sconto,
+        minimo storico e costo per dose restano quelli già valutati): l'unica
+        eccezione è un coupon nuovo, quindi i prodotti con coupon noto o con
+        badge sconto passano comunque dalla pagina completa.
+        """
+        tenuti: list[Candidate] = []
+        saltati = 0
+        adesso = datetime.now(timezone.utc)
+        for cand in cands:
+            row = getattr(self, "_prodotti", {}).get(cand.hit.asin)
+            prezzo_vetrina = cand.hit.card_price
+            if row is None or not prezzo_vetrina:
+                tenuti.append(cand)
+                continue
+            # confronto col prezzo di vetrina salvato, non con quello della pagina:
+            # sono due superfici diverse e il coupon può cambiare solo il secondo
+            riferimento = row["card_price"] or row["price"]
+            if not riferimento:
+                tenuti.append(cand)
+                continue
+            if abs(float(prezzo_vetrina) - float(riferimento)) > 0.01:
+                tenuti.append(cand)
+                continue
+            if (cand.hit.card_discount or 0) >= max(5.0, soglia * 0.5):
+                tenuti.append(cand)
+                continue
+            if row["coupon_pct"]:
+                tenuti.append(cand)
+                continue
+            visto = parse_iso(row["last_seen"])
+            if visto is None or adesso - visto > timedelta(hours=48):
+                tenuti.append(cand)
+                continue
+            saltati += 1
+        if saltati:
+            log.info(
+                "Prezzo di vetrina invariato: %s pagine prodotto evitate (su %s candidati)",
+                saltati,
+                len(cands),
+            )
+        return tenuti, saltati
+
     def _recupera_dettaglio(self, hit: SearchHit) -> tuple[Detail, bool]:
         detail = self._cached_detail(hit.asin, hit.card_price)
         if detail is not None:
@@ -257,10 +324,28 @@ class Scanner:
         return self.client.detail(hit.asin), False
 
     def _valuta_dettagli(
-        self, to_fetch: list[Candidate], thresholds: dict, result: ScanResult
+        self,
+        to_fetch: list[Candidate],
+        thresholds: dict,
+        result: ScanResult,
+        *,
+        deadline: float | None = None,
     ) -> None:
         parallelismo = max(1, int(self.cfg.parallelismo))
         bloccato = False
+
+        if deadline is not None:
+            ritmo = max(0.5, (getattr(self.client, "delay_min", 1.8) + getattr(self.client, "delay_max", 3.6)) / 2)
+            spazio = max(0, int((deadline - time.monotonic()) / ritmo))
+            if spazio < len(to_fetch):
+                log.info(
+                    "Limite di tempo: valuto %s dettagli su %s, il resto al prossimo giro",
+                    spazio,
+                    len(to_fetch),
+                )
+                to_fetch = to_fetch[:spazio]
+        if not to_fetch:
+            return
 
         with ThreadPoolExecutor(max_workers=parallelismo, thread_name_prefix="dettagli") as pool:
             futures = {pool.submit(self._recupera_dettaglio, cand.hit): cand for cand in to_fetch}
@@ -446,19 +531,22 @@ class Scanner:
             richieste=result.richieste,
         )
         log.info(
-            "Scansione %s: %s valutati, %s alert, %.1fs, %s richieste%s",
+            "Scansione %s: %s valutati, %s alert, %.1fs, %s richieste%s%s",
             "ok" if result.ok else "fallita",
             result.valutati,
             result.alert,
             result.durata_s,
             result.richieste,
+            f", {result.saltati} saltati" if result.saltati else "",
             " (dry run)" if note == "dry" else "",
         )
 
     def _cached_detail(self, asin: str, card_price: float | None) -> Detail | None:
-        if self.cfg.detail_cache_ore <= 0:
+        stabili = getattr(self, "_stabili", {})
+        ttl = self.cfg.cache_stabile_ore if stabili.get(asin) else self.cfg.detail_cache_ore
+        if ttl <= 0:
             return None
-        payload = self.store.cache_get(asin, self.cfg.detail_cache_ore)
+        payload = self.store.cache_get(asin, ttl)
         if not payload:
             return None
         cached_card = payload.get("card_price")
@@ -547,6 +635,8 @@ def humanize_scan(result: ScanResult) -> str:
     if not result.ok:
         return f"❌ Scansione non riuscita ({result.note or 'errore'})"
     riepilogo = f"{result.valutati} prodotti in {result.durata_s:.0f}s ({result.richieste} richieste)"
+    if result.saltati:
+        riepilogo += f", {result.saltati} invariati saltati"
     if result.alert:
         return f"✅ {result.alert} alert · {riepilogo}"
     return f"✅ Nessuno sconto sopra soglia · {riepilogo}"

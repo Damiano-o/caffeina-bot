@@ -65,7 +65,10 @@ class Settings:
     request_delay_min: float = 1.8
     request_delay_max: float = 3.6
     detail_cache_ore: float = 6.0
+    cache_stabile_ore: float = 24.0
     max_dettagli_per_scan: int = 25
+    max_secondi_scansione: float = 480.0
+    fast_skip: bool = True
     filtri_offerte: list[str] = field(default_factory=lambda: ["offerte_e_risparmi", "offerte_del_giorno"])
     usa_browser_se_captcha: bool = True
     timeout_browser_secondi: int = 45
@@ -82,9 +85,10 @@ class Settings:
     max_alert_giorno: int = 8
     ripeti_dopo_ore: float = 48.0
 
-    # --- Scheduling ---
+    # --- Scheduling / comandi ---
     intervallo_minuti: float = 30.0
     jitter_minuti: float = 5.0
+    max_comando_vecchio_s: int = 900
 
     # --- Percorsi ---
     db_path: Path = DATA_DIR / "state.db"
@@ -134,7 +138,10 @@ class Settings:
             request_delay_min=max(0.8, num(amazon, "ritardo_min_secondi", 1.8)),
             request_delay_max=max(1.2, num(amazon, "ritardo_max_secondi", 3.6)),
             detail_cache_ore=max(0.0, num(amazon, "cache_dettagli_ore", 6.0)),
+            cache_stabile_ore=max(0.0, num(amazon, "cache_stabile_ore", 24.0)),
             max_dettagli_per_scan=max(1, int(num(amazon, "max_dettagli_per_scan", 25))),
+            max_secondi_scansione=max(0.0, num(amazon, "max_secondi_scansione", 480.0)),
+            fast_skip=bool(amazon.get("salta_prezzi_invariati", True)),
             filtri_offerte=list(filtri),
             usa_browser_se_captcha=bool(amazon.get("browser_se_captcha", True)),
             timeout_browser_secondi=max(15, int(num(amazon, "timeout_browser_secondi", 45))),
@@ -150,6 +157,7 @@ class Settings:
             ripeti_dopo_ore=max(0.0, num(regole, "ripeti_dopo_ore", 48.0)),
             intervallo_minuti=max(5.0, num(scan, "intervallo_minuti", 30.0)),
             jitter_minuti=max(0.0, num(scan, "jitter_minuti", 5.0)),
+            max_comando_vecchio_s=max(0, int(num(scan, "comando_vecchio_minuti", 15) * 60)),
             db_path=Path(str(scan.get("db_path", DATA_DIR / "state.db"))),
             log_path=Path(str(scan.get("log_path", DATA_DIR / "bot.log"))),
         )

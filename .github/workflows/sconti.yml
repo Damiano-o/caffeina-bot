@@ -2,11 +2,21 @@ name: Sconti caffeina
 
 # Bot Telegram che gira interamente su GitHub Actions: nessun PC, nessun server.
 # Ogni 15 minuti: legge i comandi in coda su Telegram e, se è ora, scansiona Amazon.
+#
+# Nota: il cron di GitHub può ritardare di 5-20 minuti nei momenti di carico e
+# non parte mai da branch diversi da quello di default (master). Per questo il
+# bot locale con watchdog resta la modalità più affidabile; questo workflow è
+# il piano B quando il PC è spento.
 
 on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Scansiona subito, anche se l'ultima è recente"
+        type: boolean
+        default: false
 
 concurrency:
   group: caffeina-bot
@@ -27,6 +37,15 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Controllo segreti
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "::error::Manca il secret TELEGRAM_BOT_TOKEN (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+
       - name: Ripristina stato (storico prezzi, chat id, offset comandi)
         uses: actions/cache/restore@v4
         with:
@@ -35,12 +54,14 @@ jobs:
           restore-keys: caffeina-state-
 
       - name: Dipendenze
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt lxml
 
       - name: Comandi + scansione
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CAFFEINA_FORZA_SCANSIONE: ${{ inputs.force }}
+          PYTHONUNBUFFERED: "1"
         run: python run.py cloud
 
       - name: Salva stato
@@ -49,3 +70,16 @@ jobs:
         with:
           path: data
           key: caffeina-state-${{ github.run_id }}
+
+      - name: Avviso su Telegram se il giro fallisce
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then exit 0; fi
+          TESTO="⚠️ La scansione cloud è fallita. Dettagli: $RUN_URL"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -d "chat_id=$TELEGRAM_CHAT_ID" \
+            --data-urlencode "text=$TESTO" > /dev/null || true

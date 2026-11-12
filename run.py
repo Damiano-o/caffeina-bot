@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 from caffeina_bot.amazon import AmazonClient
 from caffeina_bot.bot import BotRunner
@@ -335,7 +336,8 @@ def cmd_cloud(args: argparse.Namespace) -> int:
     ultima_dt = parse_iso(ultima["ts"]) if ultima is not None else None
     intervallo = timedelta(minutes=max(5.0, cfg.intervallo_minuti))
     adesso = datetime.now(timezone.utc)
-    if ultima_dt is not None and adesso - ultima_dt < intervallo:
+    forza = os.environ.get("CAFFEINA_FORZA_SCANSIONE", "").strip().lower() in {"1", "true", "yes"}
+    if not forza and ultima_dt is not None and adesso - ultima_dt < intervallo:
         print(f"Scansione recente ({ultima['ts']}), salto.")
         return 0
 
@@ -346,6 +348,35 @@ def cmd_cloud(args: argparse.Namespace) -> int:
         result = scanner.scan(force=True)
     print(humanize_scan(result))
     return 0 if result.ok else 2
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    """Stato sintetico per il watchdog: 0 = sano, 1 = da riavviare."""
+    import json
+
+    from caffeina_bot.store import parse_iso
+
+    cfg = Settings.load()
+    cuore = DATA_DIR / "heartbeat.json"
+    if not cuore.exists():
+        print("heartbeat: assente (bot mai avviato in questa modalità)")
+        return 1
+    try:
+        dati = json.loads(cuore.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("heartbeat: illeggibile")
+        return 1
+    quando = parse_iso(dati.get("ts"))
+    if quando is None:
+        print("heartbeat: data non valida")
+        return 1
+    eta = (datetime.now(timezone.utc) - quando).total_seconds()
+    tolleranza = max(180.0, cfg.intervallo_minuti * 60 * 1.5)
+    print(
+        f"pid {dati.get('pid')} · stato {dati.get('stato')} · "
+        f"heartbeat {eta / 60:.1f} min fa (tolleranza {tolleranza / 60:.0f} min)"
+    )
+    return 0 if eta <= tolleranza else 1
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
@@ -394,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub.add_parser("test", help="invia un messaggio di prova")
     sub.add_parser("stats", help="mostra statistiche")
+    sub.add_parser("health", help="controlla se il bot è vivo (per il watchdog)")
 
     p_scan = sub.add_parser("scan", help="scansione singola")
     p_scan.add_argument("--dry", action="store_true", help="non invia nulla su Telegram")
@@ -412,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         "run": cmd_run,
         "cloud": cmd_cloud,
         "stats": cmd_stats,
+        "health": cmd_health,
     }
     try:
         return handlers[args.command](args)

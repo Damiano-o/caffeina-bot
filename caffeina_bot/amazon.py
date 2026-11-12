@@ -17,6 +17,13 @@ from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
 
+try:  # lxml è 3-5 volte più veloce di html.parser: usalo se disponibile
+    import lxml  # noqa: F401
+
+    PARSER = "lxml"
+except ImportError:  # pragma: no cover - dipende dall'ambiente
+    PARSER = "html.parser"
+
 UA_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
@@ -231,7 +238,7 @@ class Detail:
 
 
 def parse_search(html: str, domain: str = "www.amazon.it") -> list[SearchHit]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, PARSER)
     hits: list[SearchHit] = []
     seen: set[str] = set()
 
@@ -290,7 +297,7 @@ def parse_search(html: str, domain: str = "www.amazon.it") -> list[SearchHit]:
 
 
 def parse_detail(html: str, asin: str, domain: str = "www.amazon.it") -> Detail:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, PARSER)
 
     title = _first_text(soup, ["#productTitle", "#title", "h1 span#productTitle"]) or asin
 
@@ -406,9 +413,13 @@ class AmazonClient:
         self.session = requests.Session()
         self.session.headers.update(BASE_HEADERS)
         self.session.headers["User-Agent"] = random.choice(UA_POOL)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=8, max_retries=0)
+        self.session.mount("https://", adapter)
         self._load_cookies()
         self._last_request_at = 0.0
         self._throttle_lock = threading.Lock()
+        self._ultimo_salvataggio = 0.0
+        self._blocchi_consecutivi = 0
         self.richieste = 0
 
     # -- cookie persistence -------------------------------------------------- #
@@ -421,16 +432,35 @@ class AmazonClient:
         except (OSError, ValueError):
             log.debug("Cookie non leggibili, riparto da sessione pulita")
 
-    def _save_cookies(self) -> None:
+    def _save_cookies(self, *, forza: bool = False) -> None:
         if not self.cookies_path:
+            return
+        # scrivere su disco a ogni richiesta era inutile e rallentava il giro
+        adesso = time.monotonic()
+        if not forza and adesso - self._ultimo_salvataggio < 120:
             return
         try:
             self.cookies_path.parent.mkdir(parents=True, exist_ok=True)
             self.cookies_path.write_text(
                 json.dumps(self.session.cookies.get_dict(), ensure_ascii=False), encoding="utf-8"
             )
+            self._ultimo_salvataggio = adesso
         except OSError:
             log.debug("Impossibile salvare i cookie")
+
+    def close(self) -> None:
+        self._save_cookies(forza=True)
+        self.session.close()
+
+    def _blocco(self) -> None:
+        """Dopo blocchi ripetuti rinnova la sessione (cookie e user agent)."""
+        self._blocchi_consecutivi += 1
+        if self._blocchi_consecutivi >= 3:
+            log.warning("Tre blocchi consecutivi: rinnovo cookie e user agent")
+            self.session.cookies.clear()
+            self.session.headers["User-Agent"] = random.choice(UA_POOL)
+            self._blocchi_consecutivi = 0
+            self._save_cookies(forza=True)
 
     # -- HTTP ---------------------------------------------------------------- #
     def _throttle(self) -> None:
@@ -508,10 +538,12 @@ class AmazonClient:
 
             html = response.text
             if self._is_blocked(html):
+                self._blocco()
                 raise BlockedError("Amazon ha richiesto un captcha")
             if len(html) < 5_000:
                 last_error = AmazonError("risposta troppo corta")
                 continue
+            self._blocchi_consecutivi = 0
             return html
 
         raise AmazonError(f"Richiesta fallita: {last_error}")
