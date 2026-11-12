@@ -292,12 +292,14 @@ def cmd_cloud(args: argparse.Namespace) -> int:
             chat_id = str(chat)
             store.set_setting("chat_id", chat_id)
             cfg.chat_id = chat_id
+            tg.chat_id = chat_id
             print(f"Chat id registrata: {chat_id}")
             try:
                 tg.send_message(
                     "🤖 <b>Bot sconti caffeina attivo</b>\n"
                     "Gira su GitHub Actions: controlla Amazon ogni 15 minuti.\n"
                     "Scrivi /aiuto per i comandi.",
+                    chat_id=chat_id,
                     preview=False,
                 )
             except TelegramError as exc:
