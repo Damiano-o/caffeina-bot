@@ -66,22 +66,22 @@ def setup_logging(verbose: bool = False) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-REGOLE_VERSIONE = 2
+REGOLE_VERSIONE = 3
 VECCHI_DEFAULT = {"sconto_minimo": 30.0, "sconto_folle": 45.0, "dose_max_eur": 0.03}
 
 
 def _applica_regole(store: Store, cfg: Settings) -> None:
-    """Aggiorna una volta sola le soglie rimaste ai vecchi default."""
+    """Allinea le soglie ai default del codice, senza toccare quelle scelte dall'utente."""
     versione = int(store.get_setting("regole_versione", 1) or 1)
     if versione >= REGOLE_VERSIONE:
         return
-    for chiave, vecchio in VECCHI_DEFAULT.items():
-        attuale = store.get_setting(chiave)
-        nuovo = float(getattr(cfg, chiave))
-        if attuale is None or abs(float(attuale) - vecchio) < 1e-9:
-            store.set_setting(chiave, nuovo)
+    if store.get_setting("soglie_personalizzate", False):
+        store.set_setting("regole_versione", REGOLE_VERSIONE)
+        return
+    for chiave, _vecchio in VECCHI_DEFAULT.items():
+        store.set_setting(chiave, float(getattr(cfg, chiave)))
     store.set_setting("regole_versione", REGOLE_VERSIONE)
-    print("Soglie aggiornate ai nuovi default.")
+    print("Soglie allineate ai nuovi default.")
 
 
 def build(cfg: Settings, *, telegram: bool = True) -> tuple[Store, AmazonClient, TelegramClient | None, Scanner]:

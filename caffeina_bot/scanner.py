@@ -225,7 +225,19 @@ class Scanner:
             if row is not None and row["list_price"] and item.hit.card_price:
                 if item.hit.card_price <= float(row["list_price"]) * 0.75:
                     sotto_listino = 0
-            return (offerta, vetrina, sotto_listino, is_new, last_seen, item.hit.card_price or 999.0)
+            # prodotto già visto scontato: vale la pena ricontrollarlo presto
+            storico = 1
+            if row is not None and row["discount"] and float(row["discount"]) >= soglia * 0.7:
+                storico = 0
+            return (
+                offerta,
+                vetrina,
+                sotto_listino,
+                storico,
+                is_new,
+                last_seen,
+                item.hit.card_price or 999.0,
+            )
 
         ordered = sorted(candidates.values(), key=priority)
         budget = max(1, int(self.cfg.max_dettagli_per_scan))

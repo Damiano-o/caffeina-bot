@@ -270,6 +270,7 @@ class BotRunner:
             self._reply(chat_id, f"Il valore deve stare tra {minimum} e {maximum} {unit}.")
             return
         self.store.set_setting(key, value)
+        self.store.set_setting("soglie_personalizzate", True)
         log.info("Impostazione %s = %s", key, value)
         self._reply(chat_id, f"✅ <code>{key}</code> impostato a <b>{value:g} {unit}</b>.")
 
@@ -288,6 +289,7 @@ class BotRunner:
                 return
             nuovo = round(max(0.008, min(0.04, float(stats["p25"]) * 0.8)), 3)
             self.store.set_setting("dose_max_eur", nuovo)
+            self.store.set_setting("soglie_personalizzate", True)
             self._reply(
                 chat_id,
                 f"✅ Soglia calcolata dal mercato: <b>{nuovo:.3f} €/dose</b>\n"
@@ -306,6 +308,7 @@ class BotRunner:
             return
 
         self.store.set_setting("dose_max_eur", valore)
+        self.store.set_setting("soglie_personalizzate", True)
         messaggio = (
             f"✅ Tetto impostato a <b>{valore:.3f} €/dose</b>\n"
             f"Prodotti che passano: {self.store.count_under_dose(valore)}/{int(stats.get('n', 0))}"

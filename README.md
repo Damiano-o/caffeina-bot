@@ -114,6 +114,7 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 - **Digest**: con 4 o più alert in un giro arriva un unico messaggio riepilogativo.
 - **Silenziamento**: bottone "Ignora 30 giorni" su ogni alert.
 - **Misure**: ogni scansione registra durata e numero di richieste, visibili in `/stato`.
+- **Soglia dose tarabile**: `/dose auto` la calcola dal mercato rilevato (25° percentile × 0,8); i valori scelti a mano non vengono sovrascritti dagli aggiornamenti.
 
 ## Personalizzazione (`config.toml`)
 
