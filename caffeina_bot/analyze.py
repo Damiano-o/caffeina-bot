@@ -134,12 +134,13 @@ def evaluate(
     calo_storico_minimo: float,
     solo_disponibili: bool = True,
     price_min_plausibile: float = 3.5,
+    folle_fattore: float = 1.4,
 ) -> Verdict:
     """Applica le regole: notifica solo sconti alti e realmente convenienti.
 
     Una notifica scatta se:
       1. sconto >= sconto_minimo e costo/dose <= dose_max_eur  (affare solido)
-      2. sconto >= sconto_folle e costo/dose <= dose_max_eur*1.6 (sconto enorme)
+      2. sconto >= sconto_folle e costo/dose <= dose_max_eur*1.4 (sconto enorme)
       3. prezzo <= minimo storico registrato - calo_storico_minimo%
     """
     verdict = Verdict(alert=False)
@@ -183,7 +184,7 @@ def evaluate(
     sconto = discount_pct or 0.0
     kinds: list[str] = []
 
-    if sconto >= sconto_folle and dose_eur <= dose_max_eur * 1.6:
+    if sconto >= sconto_folle and dose_eur <= dose_max_eur * folle_fattore:
         kinds.append("folle")
         verdict.reasons.append(f"sconto {sconto:.0f}% (soglia folle {sconto_folle:.0f}%)")
     elif sconto >= sconto_minimo and dose_eur <= dose_max_eur:

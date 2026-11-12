@@ -76,6 +76,13 @@ class Scanner:
             log.info("Bot in pausa, scansione saltata")
             return ScanResult(ok=True, note="in pausa")
 
+        log.info(
+            "Soglie: sconto >= %.0f%%, folle >= %.0f%%, dose <= %.3f EUR/dose, calo storico >= %.0f%%",
+            float(thresholds["sconto_minimo"]),
+            float(thresholds["sconto_folle"]),
+            float(thresholds["dose_max_eur"]),
+            float(thresholds["calo_storico_minimo"]),
+        )
         if hasattr(self.client, "richieste"):
             self.client.richieste = 0
 

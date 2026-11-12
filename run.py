@@ -66,6 +66,24 @@ def setup_logging(verbose: bool = False) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+REGOLE_VERSIONE = 2
+VECCHI_DEFAULT = {"sconto_minimo": 30.0, "sconto_folle": 45.0, "dose_max_eur": 0.03}
+
+
+def _applica_regole(store: Store, cfg: Settings) -> None:
+    """Aggiorna una volta sola le soglie rimaste ai vecchi default."""
+    versione = int(store.get_setting("regole_versione", 1) or 1)
+    if versione >= REGOLE_VERSIONE:
+        return
+    for chiave, vecchio in VECCHI_DEFAULT.items():
+        attuale = store.get_setting(chiave)
+        nuovo = float(getattr(cfg, chiave))
+        if attuale is None or abs(float(attuale) - vecchio) < 1e-9:
+            store.set_setting(chiave, nuovo)
+    store.set_setting("regole_versione", REGOLE_VERSIONE)
+    print("Soglie aggiornate ai nuovi default.")
+
+
 def build(cfg: Settings, *, telegram: bool = True) -> tuple[Store, AmazonClient, TelegramClient | None, Scanner]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     store = Store(cfg.db_path)
@@ -80,6 +98,7 @@ def build(cfg: Settings, *, telegram: bool = True) -> tuple[Store, AmazonClient,
             "pausa": False,
         }
     )
+    _applica_regole(store, cfg)
     client = AmazonClient(
         domain=cfg.amazon_domain,
         delay_min=cfg.request_delay_min,

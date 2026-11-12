@@ -256,5 +256,48 @@ class TestComandiDati(unittest.TestCase):
         self.assertIn("Alert inviati: 1", testo)
 
 
+class TestSogliaDose(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        cfg = Settings(telegram_token="t", chat_id="123", db_path=Path(self.tmp.name) / "state.db")
+        self.store = Store(cfg.db_path)
+        self.store.seed_settings({"dose_max_eur": 0.025})
+        for i, dose in enumerate([0.02, 0.022, 0.0249, 0.09, 0.11]):
+            self.store.upsert_product(
+                {"asin": f"D{i}", "title": f"prodotto {i}", "dose_eur": dose, "available": 1}
+            )
+        self.tg = FakeTelegram()
+        self.runner = BotRunner(cfg, self.store, client=None, telegram=self.tg, scanner=None)  # type: ignore[arg-type]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _invia(self, testo: str) -> str:
+        self.runner._handle_update({"message": {"chat": {"id": 123}, "text": testo}})
+        return self.tg.messaggi[-1][1]
+
+    def test_senza_argomento_mostra_mercato(self) -> None:
+        testo = self._invia("/dose")
+        self.assertIn("Tetto attuale", testo)
+        self.assertIn("mediana", testo)
+        self.assertIn("25° perc.", testo)
+
+    def test_auto_calcola_dal_mercato(self) -> None:
+        testo = self._invia("/dose auto")
+        valore = self.store.get_setting("dose_max_eur")
+        self.assertAlmostEqual(valore, 0.018, places=3)
+        self.assertIn("calcolata dal mercato", testo)
+
+    def test_valore_fuori_range(self) -> None:
+        testo = self._invia("/dose 0,5")
+        self.assertIn("0,005", testo)
+        self.assertEqual(self.store.get_setting("dose_max_eur"), 0.025)
+
+    def test_valore_sopra_mediana_avvisa(self) -> None:
+        testo = self._invia("/dose 0,05")
+        self.assertIn("Sopra la mediana", testo)
+        self.assertEqual(self.store.get_setting("dose_max_eur"), 0.05)
+
+
 if __name__ == "__main__":
     unittest.main()

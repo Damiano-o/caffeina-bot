@@ -16,8 +16,8 @@ Una notifica parte se vale **almeno una** di queste condizioni:
 
 | Regola | Default | Significato |
 |---|---|---|
-| Sconto alto e prezzo buono | sconto ≥ 30% **e** costo ≤ 0,03 €/dose 200 mg | affare solido |
-| Sconto folle | sconto ≥ 45% **e** costo ≤ 0,048 €/dose | etichetta 🔥 SCONTO FOLLE |
+| Sconto alto e prezzo buono | sconto ≥ 30% **e** costo ≤ 0,025 €/dose 200 mg | affare solido |
+| Sconto folle | sconto ≥ 45% **e** costo ≤ 0,035 €/dose | etichetta 🔥 SCONTO FOLLE |
 | Nuovo minimo storico | prezzo ≥ 12% sotto il minimo registrato dal bot | 🥇 prezzo ai minimi |
 
 Filtri anti-spam: massimo 8 alert al giorno, stesso prodotto al massimo una volta ogni 48 ore (prima se il prezzo scende ancora del 5%), niente prodotti non disponibili, niente prezzi sospetti.
@@ -93,7 +93,8 @@ Rimuoverlo: `schtasks /Delete /TN "CaffeinaBot" /F`.
 | `/stato` | soglie attuali, ultima scansione, statistiche |
 | `/soglia 35` | sconto minimo % |
 | `/folle 50` | soglia "SCONTO FOLLE" |
-| `/dose 0,025` | prezzo massimo per dose 200 mg |
+| `/dose 0,025` | tetto € per dose 200 mg |
+| `/dose auto` | tetto calcolato dal mercato rilevato (25° percentile × 0,8) |
 | `/pausa` · `/riprendi` | sospende/riattiva le notifiche |
 | `/top` | i 5 sconti migliori in archivio |
 | `/info ASIN` | dettaglio, storico e ultimo alert di un prodotto |

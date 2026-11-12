@@ -76,7 +76,7 @@ class Settings:
     # --- Regole "sconto folle" (default: possono essere cambiate anche dal bot) ---
     sconto_minimo: float = 30.0
     sconto_folle: float = 45.0
-    dose_max_eur: float = 0.03
+    dose_max_eur: float = 0.025
     calo_storico_minimo: float = 12.0
     solo_disponibili: bool = True
     max_alert_giorno: int = 8
@@ -143,7 +143,7 @@ class Settings:
             digest_min=max(2, int(num(amazon, "digest_min", 4))),
             sconto_minimo=num(regole, "sconto_minimo", 30.0),
             sconto_folle=num(regole, "sconto_folle", 45.0),
-            dose_max_eur=num(regole, "dose_max_eur", 0.03),
+            dose_max_eur=num(regole, "dose_max_eur", 0.025),
             calo_storico_minimo=num(regole, "calo_storico_minimo", 12.0),
             solo_disponibili=bool(regole.get("solo_disponibili", True)),
             max_alert_giorno=max(1, int(num(regole, "max_alert_giorno", 8))),
@@ -153,6 +153,16 @@ class Settings:
             db_path=Path(str(scan.get("db_path", DATA_DIR / "state.db"))),
             log_path=Path(str(scan.get("log_path", DATA_DIR / "bot.log"))),
         )
+
+    def regole(self) -> dict[str, float]:
+        return {
+            "sconto_minimo": self.sconto_minimo,
+            "sconto_folle": self.sconto_folle,
+            "dose_max_eur": self.dose_max_eur,
+            "calo_storico_minimo": self.calo_storico_minimo,
+            "ripeti_dopo_ore": self.ripeti_dopo_ore,
+            "max_alert_giorno": self.max_alert_giorno,
+        }
 
     def telegram_ok(self) -> bool:
         return bool(self.telegram_token and self.chat_id)

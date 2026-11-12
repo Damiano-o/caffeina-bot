@@ -330,6 +330,40 @@ class Store:
                 conn.execute("SELECT * FROM alerts WHERE ts >= ? ORDER BY id DESC", (inizio,)).fetchall()
             )
 
+    def dose_stats(self) -> dict[str, float | int]:
+        """Distribuzione del costo per dose 200 mg nell'archivio (per tarare la soglia)."""
+        with self._conn() as conn:
+            valori = [
+                float(row["dose_eur"])
+                for row in conn.execute(
+                    "SELECT dose_eur FROM products WHERE available = 1 "
+                    "AND dose_eur IS NOT NULL ORDER BY dose_eur"
+                )
+            ]
+        if not valori:
+            return {"n": 0}
+
+        def percentile(p: float) -> float:
+            indice = min(len(valori) - 1, max(0, int(round(p * (len(valori) - 1)))))
+            return round(valori[indice], 4)
+
+        return {
+            "n": len(valori),
+            "min": round(valori[0], 4),
+            "p25": percentile(0.25),
+            "mediana": percentile(0.5),
+            "max": round(valori[-1], 4),
+        }
+
+    def count_under_dose(self, soglia: float) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM products WHERE available = 1 AND dose_eur IS NOT NULL "
+                "AND dose_eur <= ?",
+                (soglia,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
     def price_range(self, asin: str) -> tuple[float | None, float | None, int]:
         with self._conn() as conn:
             row = conn.execute(

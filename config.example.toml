@@ -32,7 +32,7 @@ max_dettagli_per_scan = 25 # limite pagine prodotto aperte per giro
 # --- notifica solo sconti ALTI ---
 sconto_minimo = 30         # % minimo di sconto sul prezzo consigliato
 sconto_folle = 45          # % per l'etichetta SCONTO FOLLE
-dose_max_eur = 0.03        # prezzo massimo per dose da 200 mg (filtro anti-fregatura)
+dose_max_eur = 0.025       # tetto € per dose da 200 mg (più basso = più severo)
 calo_storico_minimo = 12   # % sotto il minimo storico registrato dal bot
 solo_disponibili = true
 max_alert_giorno = 8       # tetto anti-spam

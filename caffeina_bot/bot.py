@@ -27,7 +27,8 @@ HELP = (
     "/report — riepilogo degli ultimi 7 giorni\n"
     "/soglia 30 — sconto minimo (%)\n"
     "/folle 45 — soglia per l'etichetta SCONTO FOLLE\n"
-    "/dose 0,03 — prezzo massimo per dose da 200 mg\n"
+    "/dose 0,025 — tetto € per dose da 200 mg (più basso = più severo)\n"
+    "/dose auto — calcola il tetto dal mercato rilevato\n"
     "/pausa — sospendi le notifiche\n"
     "/riprendi — riattiva le notifiche\n"
     "/ultimi — ultimi alert inviati\n"
@@ -154,7 +155,7 @@ class BotRunner:
             "/stato": lambda: self._reply(chat_id, self._status_text()),
             "/soglia": lambda: self._set_threshold(chat_id, "sconto_minimo", argument, 1, 90, "%"),
             "/folle": lambda: self._set_threshold(chat_id, "sconto_folle", argument, 5, 95, "%"),
-            "/dose": lambda: self._set_threshold(chat_id, "dose_max_eur", argument, 0.001, 1.0, "€/dose"),
+            "/dose": lambda: self._set_dose(chat_id, argument),
             "/pausa": lambda: self._toggle_pause(chat_id, True),
             "/riprendi": lambda: self._toggle_pause(chat_id, False),
             "/ultimi": lambda: self._reply(chat_id, self._last_alerts_text()),
@@ -239,7 +240,8 @@ class BotRunner:
             f"{'⏸️ in pausa' if t['pausa'] else '▶️ attivo'} · ogni {prossima_min:.0f} min\n"
             f"🔎 sconto minimo: <b>{float(t['sconto_minimo']):.0f}%</b>\n"
             f"🔥 sconto folle: <b>{float(t['sconto_folle']):.0f}%</b>\n"
-            f"💊 max {float(t['dose_max_eur']):.3f} €/dose 200 mg\n"
+            f"💊 max {float(t['dose_max_eur']):.3f} €/dose 200 mg"
+            f" ({self.store.count_under_dose(float(t['dose_max_eur']))} prodotti sotto soglia)\n"
             f"🥇 calo storico: {float(t['calo_storico_minimo']):.0f}%\n"
             f"🔁 stesso prodotto max 1 volta ogni {float(t['ripeti_dopo_ore']):.0f}h\n"
             f"📬 alert oggi: {self.store.alerts_today()}/{int(t['max_alert_giorno'])}\n\n"
@@ -270,6 +272,68 @@ class BotRunner:
         self.store.set_setting(key, value)
         log.info("Impostazione %s = %s", key, value)
         self._reply(chat_id, f"✅ <code>{key}</code> impostato a <b>{value:g} {unit}</b>.")
+
+    def _set_dose(self, chat_id: int | str, argument: str) -> None:
+        attuale = float(self.store.thresholds()["dose_max_eur"])
+        stats = self.store.dose_stats()
+        arg = argument.replace(",", ".").replace("€", "").replace("/dose", "").strip()
+
+        if not arg:
+            self._reply(chat_id, self._dose_text(attuale, stats))
+            return
+
+        if arg.lower() in {"auto", "consiglia", "calcola"}:
+            if int(stats.get("n", 0)) < 3:
+                self._reply(chat_id, "Servono almeno 3 prodotti in archivio: lancia /scan.")
+                return
+            nuovo = round(max(0.008, min(0.04, float(stats["p25"]) * 0.8)), 3)
+            self.store.set_setting("dose_max_eur", nuovo)
+            self._reply(
+                chat_id,
+                f"✅ Soglia calcolata dal mercato: <b>{nuovo:.3f} €/dose</b>\n"
+                f"(25° percentile {float(stats['p25']):.3f} € × 0,8 · mediana {float(stats['mediana']):.3f} €)\n"
+                f"Prodotti che passano: {self.store.count_under_dose(nuovo)}/{int(stats['n'])}",
+            )
+            return
+
+        try:
+            valore = float(arg)
+        except ValueError:
+            self._reply(chat_id, "Valore non valido: usa un numero (es. <code>0,025</code>) o <code>auto</code>.")
+            return
+        if not 0.005 <= valore <= 0.2:
+            self._reply(chat_id, "Il tetto deve stare tra 0,005 e 0,200 € per dose da 200 mg.")
+            return
+
+        self.store.set_setting("dose_max_eur", valore)
+        messaggio = (
+            f"✅ Tetto impostato a <b>{valore:.3f} €/dose</b>\n"
+            f"Prodotti che passano: {self.store.count_under_dose(valore)}/{int(stats.get('n', 0))}"
+        )
+        if stats.get("mediana") and valore > float(stats["mediana"]):
+            messaggio += (
+                f"\n\n⚠️ Sopra la mediana del mercato rilevato ({float(stats['mediana']):.3f} €): "
+                "passerebbero anche prodotti poco convenienti."
+            )
+        self._reply(chat_id, messaggio)
+
+    def _dose_text(self, attuale: float, stats: dict) -> str:
+        righe = [
+            f"💊 Tetto attuale: <b>{attuale:.3f} €/dose 200 mg</b>",
+            f"Prodotti in archivio sotto questa soglia: "
+            f"{self.store.count_under_dose(attuale)}/{int(stats.get('n', 0))}",
+        ]
+        if int(stats.get("n", 0)) >= 3:
+            righe += [
+                "",
+                "<b>Mercato rilevato</b>",
+                f"min {float(stats['min']):.3f} € · 25° perc. {float(stats['p25']):.3f} €",
+                f"mediana {float(stats['mediana']):.3f} € · max {float(stats['max']):.3f} €",
+                "",
+                "<code>/dose 0,025</code> imposta il tetto",
+                "<code>/dose auto</code> lo calcola dal mercato (25° percentile × 0,8)",
+            ]
+        return "\n".join(righe)
 
     def _toggle_pause(self, chat_id: int | str, paused: bool) -> None:
         self.store.set_setting("pausa", paused)
