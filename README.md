@@ -127,6 +127,31 @@ Le soglie cambiate dal bot sono salvate nel database e hanno priorità sul `conf
 
 Conclusione: scraping leggero in locale, con filtri Offerte e fallback browser, copre il caso d'uso a costo zero. Keepa diventa sensato solo se vuoi storico prezzi certificato e molte ricerche.
 
+## Modalità cloud: solo Telegram, nessun PC acceso
+
+Il bot può girare interamente su **GitHub Actions** (repo pubblico = minuti gratis), senza server e senza tenere il PC acceso:
+
+- ogni 15 minuti un job legge i comandi in coda su Telegram e, se è passata mezz'ora, scansiona Amazon;
+- lo stato (storico prezzi, chat id, offset comandi) viaggia nella cache di Actions;
+- il primo `/start` viene registrato automaticamente e da quel momento ricevi gli alert.
+
+Comandi utili:
+
+```powershell
+gh workflow run sconti.yml          # forza una passata
+gh run list --limit 3               # ultime esecuzioni
+gh run view <id> --log              # log completi
+```
+
+Limiti da conoscere:
+
+- granularità 15 minuti (GitHub può ritardare i cron sotto carico);
+- dagli IP dei runner Amazon restituisce meno risultati rispetto a casa (nessun captcha nei test);
+- GitHub disattiva i workflow schedulati dopo 60 giorni senza attività sul repo: basta un commit o un avvio manuale;
+- repo pubblico: il token sta nei Secrets, mai nel codice.
+
+Per copertura piena e comandi immediati serve un host 24/7: `Dockerfile` e `docker-compose.yml` sono pronti per una VM (Oracle Cloud Always Free, 2 OCPU/12 GB ARM, è l'opzione gratuita più solida).
+
 ## Struttura
 
 ```
